@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NexNova</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, sans-serif; background:#0f172a; color:#e2e8f0; margin:0; padding:20px; }
+  h1 { font-size:1.3rem; margin-bottom:4px; }
+  h2 { font-size:1rem; margin:0 0 8px; }
+  .muted { color:#94a3b8; font-size:0.85rem; }
+  input, select { width:100%; padding:12px; margin:6px 0; border-radius:8px; border:1px solid #334155; background:#1e293b; color:#e2e8f0; font-size:1rem; }
+  button { background:#3b82f6; color:white; border:none; padding:12px 20px; border-radius:8px; font-size:1rem; margin-top:8px; width:100%; }
+  button:disabled { background:#475569; }
+  button.secondary { background:#334155; }
+  .card { background:#1e293b; border-radius:10px; padding:16px; margin:12px 0; }
+  .status { margin-top:10px; font-size:0.85rem; }
+  table { width:100%; border-collapse:collapse; margin-top:10px; font-size:0.8rem; }
+  th, td { text-align:left; padding:6px 4px; border-bottom:1px solid #334155; vertical-align:top; }
+  .risk-low { color:#4ade80; }
+  .risk-medium { color:#facc15; }
+  .risk-high { color:#f87171; }
+  .risk-insufficient_data { color:#94a3b8; }
+  .dup-group { border:1px solid #475569; border-radius:8px; padding:10px; margin:8px 0; }
+  #app { max-width:520px; margin:0 auto; }
+</style>
+</head>
+<body>
+<div id="app">
+  <h1>NexNova</h1>
+  <div class="muted">Prototype — gestão de clientes</div>
+  <div id="content"></div>
+</div>
+
+<script>
+const SUPABASE_URL = "https://hxrwhxlzcowhrttllikb.supabase.co";
+const ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh4cndoeGx6Y293aHJ0dGxsaWtiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg5ODYyNDgsImV4cCI6MjEwNDU2MjI0OH0.RWLHVtUT-7cz1LL-pDcv-je78JsbBvyo1xWo6j4d7Lw";
+
+const content = document.getElementById("content");
+
+function getSession() {
+  const raw = sessionStorage.getItem("nn_session");
+  return raw ? JSON.parse(raw) : null;
+}
+function setSession(s) { sessionStorage.setItem("nn_session", JSON.stringify(s)); }
+function clearSession() { sessionStorage.removeItem("nn_session"); }
+
+async function api(path, opts = {}) {
+  const session = getSession();
+  const headers = {
+    "Content-Type": "application/json",
+    "apikey": ANON_KEY,
+    "Authorization": `Bearer ${session ? session.access_token : ANON_KEY}`,
+    ...(opts.headers || {})
+  };
+  const res = await fetch(`${SUPABASE_URL}${path}`, { ...opts, headers });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`${res.status}: ${err}`);
+  }
+  const text = await res.text();
+  return text ? JSON.parse(text) : null;
+}
+
+function captureTokenFromHash() {
+  if (location.hash.includes("access_token")) {
+    const params = new URLSearchParams(location.hash.substring(1));
+    const access_token = params.get("access_token");
+    const refresh_token = params.get("refresh_token");
+    if (access_token) {
+      setSession({ access_token, refresh_token });
+      history.replaceState(null, "", location.pathname);
+    }
+  }
+}
+
+function renderLogin() {
+  content.innerHTML = `
+    <div class="card">
+      <p>Entra com o teu email — vais receber um link de acesso.</p>
+      <input id="email" type="email" placeholder="email@exemplo.com">
+      <button id="sendBtn">Enviar link de acesso</button>
+      <div id="status" class="status"></div>
+    </div>
+  `;
+  document.getElementById("sendBtn").onclick = async () => {
+    const email = document.getElementById("email").value.trim();
+    const status = document.getElementById("status");
+    const btn = document.getElementById("sendBtn");
+    if (!email) { status.textContent = "Escreve um email válido."; return; }
+    btn.disabled = true;
+    status.textContent = "A enviar...";
+    try {
+      const res = await fetch(`${SUPABASE_URL}/auth/v1/otp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "apikey": ANON_KEY },
+        body: JSON.stringify({
+          email,
+          create_user: true,
+          options: { email_redirect_to: location.origin + location.pathname }
+        })
+      });
+      if (res.ok) {
+        status.textContent = "✅ Verifica o teu email e clica no link.";
+      } else {
+        status.textContent = "❌ Erro: " + await res.text();
+      }
+    } catch (e) {
+      status.textContent = "❌ Falha: " + e.message;
+    } finally {
+      btn.disabled = false;
+    }
+  };
+}
+
+async function renderApp() {
+  content.innerHTML = `<div class="muted">A carregar...</div>`;
+  try {
+    const memberships = await api("/rest/v1/business_members?select=business_id,role,businesses(id,name,business_type)");
+    if (!memberships || memberships.length === 0) {
+      renderCreateBusiness();
+    } else {
+      renderDashboard(memberships[0].businesses);
+    }
+  } catch (e) {
+    content.innerHTML = `<div class="card">Sessão inválida ou expirada.</div>`;
+    clearSession();
+    setTimeout(renderLogin, 1500);
+  }
+}
+
+function renderCreateBusiness() {
+  content.innerHTML = `
+    <div class="card">
+      <p>Ainda não tens nenhum negócio registado. Cria um:</p>
+      <input id="bizName" placeholder="Nome do negócio">
+      <input id="bizType" placeholder="Tipo (ex: retalho, serviços)">
+      <button id="createBtn">Criar negócio</button>
+      <div id="status" class="status"></div>
+    </div>
+  `;
+  document.getElementById("createBtn").onclick = async () => {
+    const name = document.getElementById("bizName").value.trim();
+    const type = document.getElementById("bizType").value.trim();
+    const status = document.getElementById("status");
+    if (!name) { status.textContent = "Dá um nome ao negócio."; return; }
+    status.textContent = "A criar...";
+    try {
+      await api("/rest/v1/rpc/create_business_with_owner", {
+        method: "POST",
+        body: JSON.stringify({ p_name: name, p_business_type: type || null })
+      });
+      renderApp();
+    } catch (e) {
+      status.textContent = "❌ " + e.message;
+    }
+  };
+}
+
+async function renderDashboard(business) {
+  content.innerHTML = `
+    <div class="card">
+      <strong>${business.name}</strong>
+      <div class="muted">${business.business_type || ""}</div>
+    </div>
+    <div class="card" id="metricsCard">
+      <p>A carregar métricas...</p>
+    </div>
+    <div class="card" id="highRiskCard" style="border:1px solid #f87171;">
+      <p>A carregar...</p>
+    </div>
+    <div class="card">
+      <p>Adicionar cliente</p>
+      <input id="clientName" placeholder="Nome do cliente">
+      <button id="addClientBtn">Adicionar cliente</button>
+      <div id="clientStatus" class="status"></div>
+    </div>
+    <div class="card">
+      <p>Registar venda</p>
+      <select id="saleClient"><option value="">Escolhe o cliente</option></select>
+      <input id="saleAmount" type="number" step="0.01" placeholder="Valor">
+      <button id="addSaleBtn">Registar venda</button>
+      <div id="saleStatus" class="status"></div>
+    </div>
+    <div class="card">
+      <p>Importar dados de uma folha de cálculo</p>
+      <button id="importBtn" class="secondary">Importar ficheiro (.xlsx/.csv)</button>
+    </div>
+    <div class="card">
+      <p>Clientes e risco de churn</p>
+      <div id="clientsTable">A carregar...</div>
+    </div>
+    <button class="secondary" id="logoutBtn">Sair</button>
+  `;
+
+  document.getElementById("logoutBtn").onclick = () => { clearSession(); renderLogin(); };
+  document.getElementById("importBtn").onclick = () => renderImportStep1(business);
+
+  async function loadMetrics() {
+    const rows = await api(`/rest/v1/business_metrics?business_id=eq.${business.id}`);
+    const m = rows && rows[0] ? rows[0] : { total_revenue: 0, revenue_this_month: 0, revenue_last_month: 0, avg_sale_value: 0, high_risk_clients: 0, repeat_purchase_rate_pct: 0, repeat_clients: 0, total_clients: 0, avg_purchase_frequency_days: null, new_clients_this_month: 0, returning_clients_this_month: 0, avg_revenue_per_client: 0 };
+    const card = document.getElementById("metricsCard");
+    const thisM = parseFloat(m.revenue_this_month);
+    const lastM = parseFloat(m.revenue_last_month);
+    let trend = "";
+    if (lastM > 0) {
+      const pct = (((thisM - lastM) / lastM) * 100).toFixed(0);
+      trend = ` (${pct >= 0 ? "+" : ""}${pct}% vs mês anterior)`;
+    } else if (thisM > 0) {
+      trend = " (sem dados do mês anterior para comparar)";
+    }
+    card.innerHTML = `
+      <p><strong>Faturação total</strong><br>${parseFloat(m.total_revenue).toFixed(2)}</p>
+      <p><strong>Faturação este mês</strong><br>${thisM.toFixed(2)}${trend}</p>
+      <p><strong>Valor médio por venda</strong><br>${parseFloat(m.avg_sale_value).toFixed(2)}</p>
+      <p><strong>Receita média por cliente</strong><br>${parseFloat(m.avg_revenue_per_client).toFixed(2)}</p>
+      <p><strong>Clientes em risco alto de churn</strong><br><span class="risk-high">${m.high_risk_clients}</span></p>
+      <p><strong>Taxa de clientes recorrentes</strong><br>${m.repeat_purchase_rate_pct}% <span class="muted">(${m.repeat_clients} de ${m.total_clients})</span></p>
+      <p><strong>Frequência média de compra</strong><br>${m.avg_purchase_frequency_days ? m.avg_purchase_frequency_days + " dias" : "sem dados suficientes"}</p>
+      <p><strong>Novos vs. recorrentes este mês</strong><br>${m.new_clients_this_month} novos · ${m.returning_clients_this_month} recorrentes</p>
+    `;
+  }
+
+  async function loadHighRiskList() {
+    const card = document.getElementById("highRiskCard");
+    const insights = await api(`/rest/v1/client_insights?business_id=eq.${business.id}&churn_risk=eq.high&select=client_name,days_since_last_purchase`);
+    if (!insights || insights.length === 0) {
+      card.innerHTML = `<p><strong>Clientes em risco de sair</strong></p><p class="muted">Nenhum cliente em risco alto neste momento.</p>`;
+      return;
+    }
+    card.innerHTML = `
+      <p><strong>⚠️ Clientes em risco de sair (${insights.length})</strong></p>
+      ${insights.map(c => `<p style="margin:4px 0;">${c.client_name} <span class="muted">— sem comprar há ${c.days_since_last_purchase} dias</span></p>`).join("")}
+    `;
+  }
+
+  async function loadClients() {
+    const clients = await api(`/rest/v1/clients?business_id=eq.${business.id}&select=id,name`);
+    const select = document.getElementById("saleClient");
+    select.innerHTML = `<option value="">Escolhe o cliente</option>` +
+      clients.map(c => `<option value="${c.id}">${c.name}</option>`).join("");
+
+    const insights = await api(`/rest/v1/client_insights?business_id=eq.${business.id}&select=client_name,ltv,total_purchases,days_since_last_purchase,churn_risk`);
+    const table = document.getElementById("clientsTable");
+    if (!insights || insights.length === 0) {
+      table.innerHTML = `<div class="muted">Sem clientes ainda.</div>`;
+      return;
+    }
+    table.innerHTML = `
+      <table>
+        <tr><th>Cliente</th><th>LTV</th><th>Compras</th><th>Risco</th></tr>
+        ${insights.map(i => `
+          <tr>
+            <td>${i.client_name}</td>
+            <td>${i.ltv}</td>
+            <td>${i.total_purchases}</td>
+            <td class="risk-${i.churn_risk}">${i.churn_risk}</td>
+          </tr>
+        `).join("")}
+      </table>
+    `;
+  }
+
+  document.getElementById("addClientBtn").onclick = async () => {
+    const name = document.getElementById("clientName").value.trim();
+    const status = document.getElementById("clientStatus");
+    if (!name) { status.textContent = "Escreve um nome."; return; }
+    try {
+      await api("/rest/v1/clients", {
+        method: "POST",
+        body: JSON.stringify({ business_id: business.id, name })
+      });
+      status.textContent = "✅ Cliente adicionado.";
+      document.getElementById("clientName").value = "";
+      loadClients();
+    } catch (e) {
+      status.textContent = "❌ " + e.message;
+    }
+  };
+
+  document.getElementById("addSaleBtn").onclick = async () => {
+    const clientId = document.getElementById("saleClient").value;
+    const amount = document.getElementById("saleAmount").value;
+    const status = document.getElementById("saleStatus");
+    if (!clientId || !amount) { status.textContent = "Escolhe cliente e valor."; return; }
+    try {
+      await api("/rest/v1/sales", {
+        method: "POST",
+        body: JSON.stringify({ business_id: business.id, client_id: clientId, amount: parseFloat(amount), sale_date: new Date().toISOString().split("T")[0] })
+      });
+      status.textContent = "✅ Venda registada.";
+      document.getElementById("saleAmount").value = "";
+      loadClients();
+    } catch (e) {
+      status.textContent = "❌ " + e.message;
+    }
+  };
+
+  loadClients();
+  loadMetrics();
+  loadHighRiskList();
+}
+
+function normalizeName(name) {
+  if (!name) return "";
+  let s = String(name).trim().replace(/\s+/g, " ");
+  s = s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  return s.toLowerCase();
+}
+
+function normalizePhone(phone) {
+  if (!phone) return "";
+  return String(phone).replace(/\D/g, "");
+}
+
+function parseDateCell(val) {
+  if (val instanceof Date && !isNaN(val)) {
+    const y = val.getFullYear(), m = val.getMonth() + 1, d = val.getDate();
+    return { date: `${y}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`, error: null };
+  }
+  if (val === null || val === undefined || String(val).trim() === "") {
+    return { date: null, error: "vazio" };
+  }
+  const s = String(val).trim();
+
+  let m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (m) {
+    const d = parseInt(m[1]), mo = parseInt(m[2]), y = parseInt(m[3]);
+    if (mo > 12) return { date: null, error: `mês inválido (${mo}) em '${s}'` };
+    if (d > 31 || d < 1) return { date: null, error: `data inválida '${s}'` };
+    return { date: `${y}-${String(mo).padStart(2,"0")}-${String(d).padStart(2,"0")}`, error: null };
+  }
+
+  m = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
+  if (m) {
+    const y = parseInt(m[1]), mo = parseInt(m[2]), d = parseInt(m[3]);
+    return { date: `${y}-${String(mo).padStart(2,"0")}-${String(d).padStart(2,"0")}`, error: null };
+  }
+
+  m = s.match(/^(\d{1,2})\s+de\s+(\w+)$/i);
+  if (m) return { date: null, error: `sem ano especificado '${s}'` };
+
+  return { date: null, error: `formato de data não reconhecido '${s}'` };
+}
+
+function parseAmountCell(val) {
+  if (val === null || val === undefined || String(val).trim() === "") {
+    return { amount: null, error: "vazio" };
+  }
+  if (typeof val === "number") return { amount: val, error: null };
+
+  const s = String(val).trim();
+  if (s.includes("R$")) return { amount: null, error: `moeda inesperada (R$) em '${s}' — confirmar se é MZN/EUR` };
+  if (s.includes("$") && !s.includes("R$")) return { amount: null, error: `símbolo de moeda ambíguo '${s}'` };
+
+  let sClean = s.replace("€", "").trim();
+
+  if (/^\d{1,3}(\.\d{3})*,\d{2}$/.test(sClean)) {
+    sClean = sClean.replace(/\./g, "").replace(",", ".");
+    return { amount: parseFloat(sClean), error: null };
+  }
+  if (/^\d+,\d+$/.test(sClean)) {
+    return { amount: parseFloat(sClean.replace(",", ".")), error: null };
+  }
+  if (/^\d+(\.\d+)?$/.test(sClean)) {
+    return { amount: parseFloat(sClean), error: null };
+  }
+  return { amount: null, error: `formato de valor não reconhecido '${s}'` };
+}
+
+function isJunkRow(clientRaw) {
+  if (!clientRaw || String(clientRaw).trim() === "") return true;
+  const upper = String(clientRaw).trim().toUpperCase();
+  if (upper.includes("TOTAL") || upper.includes("SUBTOTAL") || upper.includes("SOMA")) return true;
+  return false;
+}
+
+let importState = {};
+
+function renderImportStep1(business) {
+  importState = { business };
+  content.innerHTML = `
+    <div class="card">
+      <h2>Importar — passo 1 de 3</h2>
+      <p class="muted">Escolhe o ficheiro (.xlsx ou .csv)</p>
+      <input type="file" id="fileInput" accept=".xlsx,.xls,.csv">
+      <div id="status" class="status"></div>
+    </div>
+    <button class="secondary" id="backBtn">Voltar</button>
+  `;
+  document.getElementById("backBtn").onclick = () => renderDashboard(business);
+
+  document.getElementById("fileInput").onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const status = document.getElementById("status");
+    status.textContent = "A ler ficheiro...";
+    try {
+      const data = await file.arrayBuffer();
+      const wb = XLSX.read(data, { type: "array", cellDates: true });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: true });
+
+      let headerRowIdx = 0;
+      for (let i = 0; i < Math.min(10, rows.length); i++) {
+        const textCells = (rows[i] || []).filter(c => c !== null && typeof c === "string" && c.trim() !== "");
+        if (textCells.length >= 2) { headerRowIdx = i; break; }
+      }
+
+      importState.rows = rows;
+      importState.headerRowIdx = headerRowIdx;
+      renderImportStep2();
+    } catch (err) {
+      status.textContent = "❌ Erro a ler o ficheiro: " + err.message;
+    }
+  };
+}
+
+function renderImportStep2() {
+  const { rows, headerRowIdx, business } = importState;
+  const headerRow = rows[headerRowIdx] || [];
+  const numCols = Math.max(...rows.map(r => (r || []).length));
+
+  const colOptions = (guessRegex) => {
+    let opts = `<option value="">— não usar —</option>`;
+    for (let c = 0; c < numCols; c++) {
+      const label = headerRow[c] ? String(headerRow[c]) : `Coluna ${c + 1}`;
+      const guess = guessRegex && headerRow[c] && guessRegex.test(String(headerRow[c]));
+      opts += `<option value="${c}" ${guess ? "selected" : ""}>${label}</option>`;
+    }
+    return opts;
+  };
+
+  content.innerHTML = `
+    <div class="card">
+      <h2>Importar — passo 2 de 3</h2>
+      <p class="muted">Confirma qual coluna é qual (cabeçalho detetado na linha ${headerRowIdx + 1})</p>
+      <label class="muted">Nome do cliente</label>
+      <select id="colClient">${colOptions(/client|nome/i)}</select>
+      <label class="muted">Data</label>
+      <select id="colDate">${colOptions(/data|date/i)}</select>
+      <label class="muted">Valor</label>
+      <select id="colAmount">${colOptions(/valor|amount|pre[cç]o/i)}</select>
+      <label class="muted">Telefone (opcional, ajuda a detetar duplicados)</label>
+      <select id="colPhone">${colOptions(/tel|phone|contacto/i)}</select>
+      <button id="processBtn">Processar</button>
+      <div id="status" class="status"></div>
+    </div>
+    <button class="secondary" id="backBtn">Voltar</button>
+  `;
+  document.getElementById("backBtn").onclick = () => renderImportStep1(business);
+
+  document.getElementById("processBtn").onclick = () => {
+    const colClient = document.getElementById("colClient").value;
+    const colDate = document.getElementById("colDate").value;
+    const colAmount = document.getElementById("colAmount").value;
+    const colPhone = document.getElementById("colPhone").value;
+    const status = document.getElementById("status");
+    if (colClient === "" || colDate === "" || colAmount === "") {
+      status.textContent = "Escolhe pelo menos Cliente, Data e Valor.";
+      return;
+    }
+    importState.cols = {
+      client: parseInt(colClient),
+      date: parseInt(colDate),
+      amount: parseInt(colAmount),
+      phone: colPhone !== "" ? parseInt(colPhone) : null
+    };
+    processRows();
+    renderImportStep3();
+  };
+}
+
+function processRows() {
+  const { rows, headerRowIdx, cols } = importState;
+  const out = [];
+
+  for (let r = headerRowIdx + 1; r < rows.length; r++) {
+    const row = rows[r] || [];
+    const clientRaw = row[cols.client];
+    const dateRaw = row[cols.date];
+    const amountRaw = row[cols.amount];
+    const phoneRaw = cols.phone !== null ? row[cols.phone] : null;
+
+    if (isJunkRow(clientRaw)) {
+      if (clientRaw && String(clientRaw).trim() !== "") {
+        out.push({ rowNum: r + 1, clientRaw, excluded: true });
+      }
+      continue;
+    }
+
+    const { date, error: dateErr } = parseDateCell(dateRaw);
+    const { amount, error: amountErr } = parseAmountCell(amountRaw);
+    const issues = [];
+    if (dateErr) issues.push(`data: ${dateErr}`);
+    if (amountErr) issues.push(`valor: ${amountErr}`);
+
+    out.push({
+      rowNum: r + 1,
+      clientRaw,
+      clientNormalized: normalizeName(clientRaw),
+      phoneRaw,
+      phoneNormalized: normalizePhone(phoneRaw),
+      date, amount,
+      ok: issues.length === 0,
+      issues
+    });
+  }
+
+  const byName = {};
+  out.forEach(r => {
+    if (r.excluded) return;
+    (byName[r.clientNormalized] = byName[r.clientNormalized] || []).push(r);
+  });
+  const nameGroups = Object.entries(byName)
+    .filter(([k, list]) => new Set(list.map(r => r.clientRaw)).size > 1)
+    .map(([key, list]) => ({ type: "name", key, rows: list, rawVariants: [...new Set(list.map(r => r.clientRaw))] }));
+
+  const byPhone = {};
+  out.forEach(r => {
+    if (r.excluded || !r.phoneNormalized) return;
+    (byPhone[r.phoneNormalized] = byPhone[r.phoneNormalized] || []).push(r);
+  });
+  const phoneGroups = Object.entries(byPhone)
+    .filter(([k, list]) => new Set(list.map(r => r.clientNormalized)).size > 1)
+    .map(([key, list]) => ({ type: "phone", key, rows: list, rawVariants: [...new Set(list.map(r => r.clientRaw))] }));
+
+  importState.processed = out;
+  importState.dupGroups = [...nameGroups, ...phoneGroups];
+}
+
+function renderImportStep3() {
+  const { business, processed, dupGroups } = importState;
+  const okRows = processed.filter(r => !r.excluded && r.ok);
+  const reviewRows = processed.filter(r => !r.excluded && !r.ok);
+  const excludedRows = processed.filter(r => r.excluded);
+
+  content.innerHTML = `
+    <div class="card">
+      <h2>Importar — passo 3 de 3 (revisão)</h2>
+      <p class="muted">${okRows.length} linhas prontas · ${reviewRows.length} assinaladas · ${excludedRows.length} excluídas</p>
+    </div>
+
+    ${dupGroups.length > 0 ? `
+    <div class="card">
+      <p><strong>Possíveis duplicados</strong></p>
+      ${dupGroups.map((g, i) => `
+        <div class="dup-group">
+          <div class="muted">${g.type === "name" ? "Mesmo nome (grafia diferente)" : "Mesmo telefone, nome diferente"}</div>
+          <div>${g.rawVariants.join(" / ")}</div>
+          <label style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+            <input type="checkbox" id="dupgroup_${i}" ${g.type === "name" ? "checked" : ""} style="width:auto;">
+            <span>É a mesma pessoa</span>
+          </label>
+        </div>
+      `).join("")}
+    </div>` : ""}
+
+    <div class="card">
+      <p><strong>Linhas prontas (${okRows.length})</strong></p>
+      <table>
+        <tr><th>Cliente</th><th>Data</th><th>Valor</th></tr>
+        ${okRows.map(r => `<tr><td>${r.clientRaw}</td><td>${r.date}</td><td>${r.amount}</td></tr>`).join("")}
+      </table>
+    </div>
+
+    ${reviewRows.length > 0 ? `
+    <div class="card">
+      <p><strong>Assinaladas — não importadas (${reviewRows.length})</strong></p>
+      <table>
+        <tr><th>Cliente</th><th>Motivo</th></tr>
+        ${reviewRows.map(r => `<tr><td>${r.clientRaw}</td><td>${r.issues.join("; ")}</td></tr>`).join("")}
+      </table>
+    </div>` : ""}
+
+    <div class="card">
+      <button id="confirmImportBtn">Importar ${okRows.length} linhas</button>
+      <div id="status" class="status"></div>
+    </div>
+    <button class="secondary" id="backBtn">Cancelar</button>
+  `;
+
+  document.getElementById("backBtn").onclick = () => renderDashboard(business);
+
+  document.getElementById("confirmImportBtn").onclick = async () => {
+    const status = document.getElementById("status");
+    status.textContent = "A importar...";
+    try {
+      const nameToCanonical = {};
+      dupGroups.forEach((g, i) => {
+        const merge = document.getElementById(`dupgroup_${i}`).checked;
+        if (merge) {
+          const canonical = g.rawVariants.sort((a, b) => b.length - a.length)[0];
+          g.rows.forEach(r => { nameToCanonical[r.clientNormalized] = canonical; });
+        }
+      });
+
+      const finalClientNames = new Set();
+      okRows.forEach(r => {
+        const canonical = nameToCanonical[r.clientNormalized] || r.clientRaw;
+        finalClientNames.add(canonical);
+      });
+
+      const nameToId = {};
+      for (const name of finalClientNames) {
+        const created = await api("/rest/v1/clients", {
+          method: "POST",
+          headers: { "Prefer": "return=representation" },
+          body: JSON.stringify({ business_id: business.id, name })
+        });
+        nameToId[name] = created[0].id;
+      }
+
+      let salesCount = 0;
+      for (const r of okRows) {
+        const canonical = nameToCanonical[r.clientNormalized] || r.clientRaw;
+        await api("/rest/v1/sales", {
+          method: "POST",
+          body: JSON.stringify({
+            business_id: business.id,
+            client_id: nameToId[canonical],
+            amount: r.amount,
+            sale_date: r.date
+          })
+        });
+        salesCount++;
+      }
+
+      status.textContent = `✅ Importado: ${finalClientNames.size} clientes, ${salesCount} vendas.`;
+      setTimeout(() => renderDashboard(business), 2000);
+    } catch (e) {
+      status.textContent = "❌ " + e.message;
+    }
+  };
+}
+
+captureTokenFromHash();
+if (getSession()) {
+  renderApp();
+} else {
+  renderLogin();
+}
+</script>
+</body>
+</html>
