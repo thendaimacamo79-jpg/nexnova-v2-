@@ -242,7 +242,7 @@ async function renderDashboard(business) {
     select.innerHTML = `<option value="">Escolhe o cliente</option>` +
       clients.map(c => `<option value="${c.id}">${c.name}</option>`).join("");
 
-    const insights = await api(`/rest/v1/client_insights?business_id=eq.${business.id}&select=client_name,ltv,total_purchases,days_since_last_purchase,churn_risk`);
+    const insights = await api(`/rest/v1/client_insights?business_id=eq.${business.id}&select=client_id,client_name,ltv,total_purchases,days_since_last_purchase,churn_risk`);
     const table = document.getElementById("clientsTable");
     if (!insights || insights.length === 0) {
       table.innerHTML = `<div class="muted">Sem clientes ainda.</div>`;
@@ -250,17 +250,116 @@ async function renderDashboard(business) {
     }
     table.innerHTML = `
       <table>
-        <tr><th>Cliente</th><th>LTV</th><th>Compras</th><th>Risco</th></tr>
+        <tr><th>Cliente</th><th>LTV</th><th>Compras</th><th>Risco</th><th>Ações</th></tr>
         ${insights.map(i => `
           <tr>
             <td>${i.client_name}</td>
             <td>${i.ltv}</td>
             <td>${i.total_purchases}</td>
             <td class="risk-${i.churn_risk}">${i.churn_risk}</td>
+            <td>
+              <button class="small secondary" data-action="rename" data-id="${i.client_id}" data-name="${i.client_name}">Editar</button>
+              <button class="small secondary" data-action="delete-client" data-id="${i.client_id}" ${i.total_purchases > 0 ? "disabled title=\"Tem vendas associadas — apaga as vendas primeiro\"" : ""}>Apagar</button>
+              <button class="small secondary" data-action="toggle-sales" data-id="${i.client_id}">Vendas</button>
+            </td>
+          </tr>
+          <tr id="salesRow_${i.client_id}" style="display:none;">
+            <td colspan="5"><div id="salesList_${i.client_id}" class="muted">A carregar...</div></td>
           </tr>
         `).join("")}
       </table>
     `;
+
+    table.querySelectorAll('[data-action="rename"]').forEach(btn => {
+      btn.onclick = async () => {
+        const newName = prompt("Novo nome do cliente:", btn.dataset.name);
+        if (!newName || newName.trim() === "") return;
+        try {
+          await api(`/rest/v1/clients?id=eq.${btn.dataset.id}`, {
+            method: "PATCH",
+            body: JSON.stringify({ name: newName.trim() })
+          });
+          loadClients();
+        } catch (e) {
+          alert("Erro: " + e.message);
+        }
+      };
+    });
+
+    table.querySelectorAll('[data-action="delete-client"]').forEach(btn => {
+      btn.onclick = async () => {
+        if (!confirm("Apagar este cliente?")) return;
+        try {
+          await api(`/rest/v1/clients?id=eq.${btn.dataset.id}`, { method: "DELETE" });
+          loadClients();
+        } catch (e) {
+          alert("Erro: " + e.message);
+        }
+      };
+    });
+
+    table.querySelectorAll('[data-action="toggle-sales"]').forEach(btn => {
+      btn.onclick = async () => {
+        const row = document.getElementById(`salesRow_${btn.dataset.id}`);
+        const visible = row.style.display !== "none";
+        row.style.display = visible ? "none" : "table-row";
+        if (!visible) loadSalesForClient(btn.dataset.id);
+      };
+    });
+  }
+
+  async function loadSalesForClient(clientId) {
+    const container = document.getElementById(`salesList_${clientId}`);
+    const sales = await api(`/rest/v1/sales?client_id=eq.${clientId}&select=id,amount,sale_date&order=sale_date.desc`);
+    if (!sales || sales.length === 0) {
+      container.innerHTML = "Sem vendas.";
+      return;
+    }
+    container.innerHTML = sales.map(s => `
+      <div style="display:flex; justify-content:space-between; align-items:center; padding:4px 0; border-bottom:1px solid #334155;">
+        <span>${s.sale_date} — ${s.amount}</span>
+        <span>
+          <button class="small secondary" data-edit-sale="${s.id}" data-amount="${s.amount}" data-date="${s.sale_date}">Editar</button>
+          <button class="small secondary" data-del-sale="${s.id}">Apagar</button>
+        </span>
+      </div>
+    `).join("");
+
+    container.querySelectorAll("[data-edit-sale]").forEach(btn => {
+      btn.onclick = async () => {
+        const newAmount = prompt("Novo valor:", btn.dataset.amount);
+        if (newAmount === null || newAmount.trim() === "") return;
+        const newDate = prompt("Nova data (AAAA-MM-DD):", btn.dataset.date);
+        if (newDate === null || newDate.trim() === "") return;
+        try {
+          await api(`/rest/v1/sales?id=eq.${btn.dataset.editSale}`, {
+            method: "PATCH",
+            body: JSON.stringify({ amount: parseFloat(newAmount), sale_date: newDate.trim() })
+          });
+          loadSalesForClient(clientId);
+          loadClients();
+          loadMetrics();
+          loadHighRiskList();
+        } catch (e) {
+          alert("Erro: " + e.message);
+        }
+      };
+    });
+
+    container.querySelectorAll("[data-del-sale]").forEach(btn => {
+      btn.onclick = async () => {
+        if (!confirm("Apagar esta venda?")) return;
+        try {
+          await api(`/rest/v1/sales?id=eq.${btn.dataset.delSale}`, { method: "DELETE" });
+          loadSalesForClient(clientId);
+          loadClients();
+          loadMetrics();
+          loadHighRiskList();
+        } catch (e) {
+          alert("Erro: " + e.message);
+        }
+      };
+    });
   }
 
   document.getElementById("addClientBtn").onclick = async () => {
