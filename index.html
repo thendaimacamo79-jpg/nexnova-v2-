@@ -15,6 +15,7 @@
   button { background:#3b82f6; color:white; border:none; padding:12px 20px; border-radius:8px; font-size:1rem; margin-top:8px; width:100%; }
   button:disabled { background:#475569; }
   button.secondary { background:#334155; }
+  button.small { width:auto; display:inline-block; padding:5px 8px; font-size:0.7rem; margin:2px 3px 2px 0; }
   .card { background:#1e293b; border-radius:10px; padding:16px; margin:12px 0; }
   .status { margin-top:10px; font-size:0.85rem; }
   table { width:100%; border-collapse:collapse; margin-top:10px; font-size:0.8rem; }
@@ -75,6 +76,8 @@ function captureTokenFromHash() {
     }
   }
 }
+
+// ============ LOGIN ============
 
 function renderLogin() {
   content.innerHTML = `
@@ -158,6 +161,8 @@ function renderCreateBusiness() {
     }
   };
 }
+
+// ============ DASHBOARD ============
 
 async function renderDashboard(business) {
   content.innerHTML = `
@@ -249,6 +254,7 @@ async function renderDashboard(business) {
       return;
     }
     table.innerHTML = `
+      <div style="overflow-x:auto;">
       <table>
         <tr><th>Cliente</th><th>LTV</th><th>Compras</th><th>Risco</th><th>Ações</th></tr>
         ${insights.map(i => `
@@ -257,7 +263,7 @@ async function renderDashboard(business) {
             <td>${i.ltv}</td>
             <td>${i.total_purchases}</td>
             <td class="risk-${i.churn_risk}">${i.churn_risk}</td>
-            <td>
+            <td style="white-space:nowrap;">
               <button class="small secondary" data-action="rename" data-id="${i.client_id}" data-name="${i.client_name}">Editar</button>
               <button class="small secondary" data-action="delete-client" data-id="${i.client_id}" ${i.total_purchases > 0 ? "disabled title=\"Tem vendas associadas — apaga as vendas primeiro\"" : ""}>Apagar</button>
               <button class="small secondary" data-action="toggle-sales" data-id="${i.client_id}">Vendas</button>
@@ -268,6 +274,7 @@ async function renderDashboard(business) {
           </tr>
         `).join("")}
       </table>
+      </div>
     `;
 
     table.querySelectorAll('[data-action="rename"]').forEach(btn => {
@@ -402,6 +409,8 @@ async function renderDashboard(business) {
   loadHighRiskList();
 }
 
+// ============ IMPORT: normalization helpers (ported from validated Python logic) ============
+
 function normalizeName(name) {
   if (!name) return "";
   let s = String(name).trim().replace(/\s+/g, " ");
@@ -475,6 +484,8 @@ function isJunkRow(clientRaw) {
   if (upper.includes("TOTAL") || upper.includes("SUBTOTAL") || upper.includes("SOMA")) return true;
   return false;
 }
+
+// ============ IMPORT: Step 1 - file upload ============
 
 let importState = {};
 
@@ -735,6 +746,7 @@ function renderImportStep3() {
   };
 }
 
+// ============ Init ============
 captureTokenFromHash();
 if (getSession()) {
   renderApp();
