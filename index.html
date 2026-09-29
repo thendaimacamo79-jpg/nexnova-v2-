@@ -194,7 +194,7 @@ async function renderDashboard(business) {
       <button id="importBtn" class="secondary">Importar ficheiro (.xlsx/.csv)</button>
     </div>
     <div class="card">
-      <p>Clientes e risco de churn</p>
+      <p>Clientes e risco de saída</p>
       <div id="clientsTable">A carregar...</div>
     </div>
     <button class="secondary" id="logoutBtn">Sair</button>
@@ -221,7 +221,7 @@ async function renderDashboard(business) {
       <p><strong>Faturação este mês</strong><br>${thisM.toFixed(2)}${trend}</p>
       <p><strong>Valor médio por venda</strong><br>${parseFloat(m.avg_sale_value).toFixed(2)}</p>
       <p><strong>Receita média por cliente</strong><br>${parseFloat(m.avg_revenue_per_client).toFixed(2)}</p>
-      <p><strong>Clientes em risco alto de churn</strong><br><span class="risk-high">${m.high_risk_clients}</span></p>
+      <p><strong>Clientes em risco de sair</strong><br><span class="risk-high">${m.high_risk_clients}</span></p>
       <p><strong>Taxa de clientes recorrentes</strong><br>${m.repeat_purchase_rate_pct}% <span class="muted">(${m.repeat_clients} de ${m.total_clients})</span></p>
       <p><strong>Frequência média de compra</strong><br>${m.avg_purchase_frequency_days ? m.avg_purchase_frequency_days + " dias" : "sem dados suficientes"}</p>
       <p><strong>Novos vs. recorrentes este mês</strong><br>${m.new_clients_this_month} novos · ${m.returning_clients_this_month} recorrentes</p>
@@ -256,13 +256,13 @@ async function renderDashboard(business) {
     table.innerHTML = `
       <div style="overflow-x:auto;">
       <table>
-        <tr><th>Cliente</th><th>LTV</th><th>Compras</th><th>Risco</th><th>Ações</th></tr>
+        <tr><th>Cliente</th><th>Total gasto</th><th>Compras</th><th>Risco de saída</th><th>Ações</th></tr>
         ${insights.map(i => `
           <tr>
             <td>${i.client_name}</td>
             <td>${i.ltv}</td>
             <td>${i.total_purchases}</td>
-            <td class="risk-${i.churn_risk}">${i.churn_risk}</td>
+            <td class="risk-${i.churn_risk}">${riskLabel(i.churn_risk)}</td>
             <td style="white-space:nowrap;">
               <button class="small secondary" data-action="rename" data-id="${i.client_id}" data-name="${i.client_name}">Editar</button>
               <button class="small secondary" data-action="delete-client" data-id="${i.client_id}" data-purchases="${i.total_purchases}" data-name="${i.client_name}">Apagar</button>
@@ -412,6 +412,17 @@ async function renderDashboard(business) {
   loadClients();
   loadMetrics();
   loadHighRiskList();
+}
+
+// ============ Helpers de apresentação ============
+
+function riskLabel(code) {
+  const labels = { high: "Alto", medium: "Médio", low: "Baixo", insufficient_data: "Poucos dados" };
+  return labels[code] || code;
+}
+
+function cleanName(name) {
+  return String(name || "").trim().replace(/\s+/g, " ");
 }
 
 // ============ IMPORT: normalization helpers (ported from validated Python logic) ============
@@ -707,14 +718,14 @@ function renderImportStep3() {
       dupGroups.forEach((g, i) => {
         const merge = document.getElementById(`dupgroup_${i}`).checked;
         if (merge) {
-          const canonical = g.rawVariants.sort((a, b) => b.length - a.length)[0];
+          const canonical = cleanName(g.rawVariants.sort((a, b) => cleanName(b).length - cleanName(a).length)[0]);
           g.rows.forEach(r => { nameToCanonical[r.clientNormalized] = canonical; });
         }
       });
 
       const finalClientNames = new Set();
       okRows.forEach(r => {
-        const canonical = nameToCanonical[r.clientNormalized] || r.clientRaw;
+        const canonical = nameToCanonical[r.clientNormalized] || cleanName(r.clientRaw);
         finalClientNames.add(canonical);
       });
 
@@ -730,7 +741,7 @@ function renderImportStep3() {
 
       let salesCount = 0;
       for (const r of okRows) {
-        const canonical = nameToCanonical[r.clientNormalized] || r.clientRaw;
+        const canonical = nameToCanonical[r.clientNormalized] || cleanName(r.clientRaw);
         await api("/rest/v1/sales", {
           method: "POST",
           body: JSON.stringify({
