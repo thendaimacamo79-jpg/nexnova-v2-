@@ -246,7 +246,9 @@ async function renderDashboard(business) {
     <div class="card">
       <p>Registar venda</p>
       <select id="saleClient"><option value="">Escolhe o cliente</option></select>
-      <input id="saleAmount" type="number" step="0.01" placeholder="Valor">
+      <input id="saleAmount" type="number" step="0.01" min="0.01" placeholder="Valor">
+      <label class="muted">Data da venda</label>
+      <input id="saleDate" type="date">
       <button id="addSaleBtn">Registar venda</button>
       <div id="saleStatus" class="status"></div>
     </div>
@@ -263,6 +265,7 @@ async function renderDashboard(business) {
 
   document.getElementById("logoutBtn").onclick = () => { clearSession(); renderLogin(); };
   document.getElementById("importBtn").onclick = () => renderImportStep1(business);
+  document.getElementById("saleDate").value = new Date().toISOString().split("T")[0];
 
   async function loadMetrics() {
     const rows = await api(`/rest/v1/business_metrics?business_id=eq.${business.id}`);
@@ -402,12 +405,14 @@ async function renderDashboard(business) {
       btn.onclick = async () => {
         const newAmount = prompt("Novo valor:", btn.dataset.amount);
         if (newAmount === null || newAmount.trim() === "") return;
+        const parsedAmount = parseFloat(newAmount);
+        if (isNaN(parsedAmount) || parsedAmount <= 0) { alert("O valor tem de ser maior que zero."); return; }
         const newDate = prompt("Nova data (AAAA-MM-DD):", btn.dataset.date);
         if (newDate === null || newDate.trim() === "") return;
         try {
           await api(`/rest/v1/sales?id=eq.${btn.dataset.editSale}`, {
             method: "PATCH",
-            body: JSON.stringify({ amount: parseFloat(newAmount), sale_date: newDate.trim() })
+            body: JSON.stringify({ amount: parsedAmount, sale_date: newDate.trim() })
           });
           loadSalesForClient(clientId);
           loadClients();
@@ -454,16 +459,21 @@ async function renderDashboard(business) {
 
   document.getElementById("addSaleBtn").onclick = async () => {
     const clientId = document.getElementById("saleClient").value;
-    const amount = document.getElementById("saleAmount").value;
+    const amountRaw = document.getElementById("saleAmount").value;
+    const dateRaw = document.getElementById("saleDate").value;
     const status = document.getElementById("saleStatus");
-    if (!clientId || !amount) { status.textContent = "Escolhe cliente e valor."; return; }
+    if (!clientId || !amountRaw) { status.textContent = "Escolhe cliente e valor."; return; }
+    const amount = parseFloat(amountRaw);
+    if (isNaN(amount) || amount <= 0) { status.textContent = "O valor tem de ser maior que zero."; return; }
+    const saleDate = dateRaw || new Date().toISOString().split("T")[0];
     try {
       await api("/rest/v1/sales", {
         method: "POST",
-        body: JSON.stringify({ business_id: business.id, client_id: clientId, amount: parseFloat(amount), sale_date: new Date().toISOString().split("T")[0] })
+        body: JSON.stringify({ business_id: business.id, client_id: clientId, amount, sale_date: saleDate })
       });
       status.textContent = "✅ Venda registada.";
       document.getElementById("saleAmount").value = "";
+      document.getElementById("saleDate").value = new Date().toISOString().split("T")[0];
       loadClients();
     } catch (e) {
       status.textContent = "❌ " + e.message;
