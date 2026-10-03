@@ -541,6 +541,16 @@ function parseDateCell(val) {
 }
 
 function parseAmountCell(val) {
+  const result = parseAmountCellRaw(val);
+  // The DB (and the manual sale form) reject amount <= 0, so flag it here too
+  // instead of letting it fail mid-import with a raw Postgres error.
+  if (result.error === null && result.amount <= 0) {
+    return { amount: null, error: `valor tem de ser maior que zero (recebido '${val}')` };
+  }
+  return result;
+}
+
+function parseAmountCellRaw(val) {
   if (val === null || val === undefined || String(val).trim() === "") {
     return { amount: null, error: "vazio" };
   }
