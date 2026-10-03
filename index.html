@@ -48,15 +48,74 @@ function getSession() {
 function setSession(s) { sessionStorage.setItem("nn_session", JSON.stringify(s)); }
 function clearSession() { sessionStorage.removeItem("nn_session"); }
 
-async function api(path, opts = {}) {
+let refreshInFlight = null;
+
+async function refreshSession() {
   const session = getSession();
-  const headers = {
+  if (!session || !session.refresh_token) return null;
+  if (refreshInFlight) return refreshInFlight;
+
+  refreshInFlight = (async () => {
+    try {
+      const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "apikey": ANON_KEY },
+        body: JSON.stringify({ refresh_token: session.refresh_token })
+      });
+      if (!res.ok) { clearSession(); return null; }
+      const data = await res.json();
+      const newSession = {
+        access_token: data.access_token,
+        refresh_token: data.refresh_token,
+        expires_at: Date.now() + (data.expires_in * 1000)
+      };
+      setSession(newSession);
+      return newSession;
+    } catch (e) {
+      return null;
+    } finally {
+      refreshInFlight = null;
+    }
+  })();
+
+  return refreshInFlight;
+}
+
+async function ensureValidSession() {
+  let session = getSession();
+  if (!session) return null;
+  const expiringSoon = !session.expires_at || session.expires_at < Date.now() + 60000;
+  if (expiringSoon) session = await refreshSession();
+  return session;
+}
+
+async function api(path, opts = {}) {
+  let session = await ensureValidSession();
+  const buildHeaders = (s) => ({
     "Content-Type": "application/json",
     "apikey": ANON_KEY,
-    "Authorization": `Bearer ${session ? session.access_token : ANON_KEY}`,
+    "Authorization": `Bearer ${s ? s.access_token : ANON_KEY}`,
     ...(opts.headers || {})
-  };
-  const res = await fetch(`${SUPABASE_URL}${path}`, { ...opts, headers });
+  });
+
+  let res = await fetch(`${SUPABASE_URL}${path}`, { ...opts, headers: buildHeaders(session) });
+
+  // Belt-and-braces: if the token was rejected despite the proactive refresh
+  // (e.g. clock drift, or it was revoked), try refreshing once more before giving up.
+  if (res.status === 401 && session) {
+    session = await refreshSession();
+    if (session) {
+      res = await fetch(`${SUPABASE_URL}${path}`, { ...opts, headers: buildHeaders(session) });
+    }
+  }
+
+  if (res.status === 401) {
+    clearSession();
+    content.innerHTML = `<div class="card">A tua sessão expirou. Entra de novo para continuares.</div>`;
+    setTimeout(renderLogin, 1500);
+    throw new Error("Sessão expirada");
+  }
+
   if (!res.ok) {
     const err = await res.text();
     throw new Error(`${res.status}: ${err}`);
@@ -70,8 +129,9 @@ function captureTokenFromHash() {
     const params = new URLSearchParams(location.hash.substring(1));
     const access_token = params.get("access_token");
     const refresh_token = params.get("refresh_token");
+    const expires_in = parseInt(params.get("expires_in") || "3600", 10);
     if (access_token) {
-      setSession({ access_token, refresh_token });
+      setSession({ access_token, refresh_token, expires_at: Date.now() + (expires_in * 1000) });
       history.replaceState(null, "", location.pathname);
     }
   }
@@ -128,9 +188,10 @@ async function renderApp() {
       renderDashboard(memberships[0].businesses);
     }
   } catch (e) {
-    content.innerHTML = `<div class="card">Sessão inválida ou expirada.</div>`;
-    clearSession();
-    setTimeout(renderLogin, 1500);
+    // api() already shows its own message and redirects to login on a dead session.
+    if (e.message !== "Sessão expirada") {
+      content.innerHTML = `<div class="card">Não foi possível carregar. Verifica a ligação e tenta novamente.</div>`;
+    }
   }
 }
 
