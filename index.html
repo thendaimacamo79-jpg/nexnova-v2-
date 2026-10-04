@@ -152,11 +152,14 @@ function setStatus(el, msg, kind) {
 }
 
 function getSession() {
-  const raw = sessionStorage.getItem("nn_session");
+  // localStorage (not sessionStorage) so the session survives closing the
+  // tab/browser — sessionStorage is wiped the moment the tab closes, which
+  // was forcing a fresh magic-link login every time.
+  const raw = localStorage.getItem("nn_session");
   return raw ? JSON.parse(raw) : null;
 }
-function setSession(s) { sessionStorage.setItem("nn_session", JSON.stringify(s)); }
-function clearSession() { sessionStorage.removeItem("nn_session"); }
+function setSession(s) { localStorage.setItem("nn_session", JSON.stringify(s)); }
+function clearSession() { localStorage.removeItem("nn_session"); }
 
 let refreshInFlight = null;
 
